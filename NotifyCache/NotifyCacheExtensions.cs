@@ -4,12 +4,11 @@ using Microsoft.Extensions.DependencyInjection;
 
 public static class NotifyCacheExtensions
 {
-    public static IServiceCollection AddNotifyCache(this IServiceCollection services)
-        => services.AddNotifyCache<NotifyCache>();
+    public static IServiceCollection AddNotifyCache<TKey>(this IServiceCollection services)
+        where TKey : notnull
+        => services.AddNotifyCache<NotifyCache<TKey>>();
 
-    public static IServiceCollection AddNotifyCache<T>(this IServiceCollection services) where T : class, INotifyCache
-        => services.AddNotifyCache(x => new NotifyCache());
-
-    public static IServiceCollection AddNotifyCache<T>(this IServiceCollection services, Func<IServiceProvider, T> implementationFactory) where T : class, INotifyCache
-        => services.AddSingleton<INotifyCache, T>(implementationFactory);
+    public static IServiceCollection AddNotifyCache<TImplementation>(this IServiceCollection services, Func<IServiceProvider, TImplementation> implementationFactory)
+        where TImplementation : class
+        => services.AddSingleton(implementationFactory);
 }
