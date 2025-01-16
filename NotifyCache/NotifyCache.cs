@@ -4,11 +4,12 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
-public sealed class NotifyCache<TKey> where TKey : notnull
+public sealed class NotifyCache<TKey> : IDisposable where TKey : notnull
 {
     private readonly Lock _lock;
     private readonly Dictionary<TKey, INotifyCacheItem> _cache;
-    private readonly OrderedDictionary<long, TKey> _expirationUnixSeconds;
+    private readonly OrderedDictionary<long, TKey> _expirationUnixMs;
+    private Task? nextExpirationTask;
 
     public event OnExpiration<TKey>? ItemExpired;
 
@@ -16,7 +17,7 @@ public sealed class NotifyCache<TKey> where TKey : notnull
     {
         _lock = new Lock();
         _cache = new Dictionary<TKey, INotifyCacheItem>(equalityComparer);
-        _expirationUnixSeconds = [];
+        _expirationUnixMs = [];
     }
 
     public bool TryGet<TValue>(TKey key, out TValue value) where TValue : notnull
@@ -34,25 +35,11 @@ public sealed class NotifyCache<TKey> where TKey : notnull
         }
     }
 
-    public bool TryAdd<TValue>(TKey key, TValue item, DateTimeOffset expiration) where TValue : notnull
-    {
-        if (expiration <= DateTimeOffset.Now) throw new ArgumentException($"{nameof(expiration)} has to be in the future", nameof(expiration));
+    public bool TryAdd<TValue>(TKey key, TValue item) where TValue : notnull
+        => TryAdd(key, item, long.MinValue);
 
-        lock (_lock)
-        {
-            var unixSeconds = expiration.ToUnixTimeSeconds();
-
-            var success = _cache.TryAdd(key, new InternalNotifyCacheItem<TValue>
-            {
-                Value = item,
-                UnixSeconds = unixSeconds
-            });
-
-            if (success) _expirationUnixSeconds.Add(unixSeconds, key);
-
-            return success;
-        }
-    }
+    public bool TryAdd<TValue>(TKey key, TValue item, in TimeSpan expireIn) where TValue : notnull
+        => TryAdd(key, item, DateTimeOffset.UtcNow.Add(expireIn).ToUnixTimeMilliseconds());
 
     public bool TryRemove(TKey key)
     {
@@ -60,34 +47,48 @@ public sealed class NotifyCache<TKey> where TKey : notnull
         {
             var success = _cache.Remove(key, out var item);
 
-            if (success) _expirationUnixSeconds.Remove(item!.UnixSeconds);
+            if (success) _expirationUnixMs.Remove(item!.UnixSeconds);
 
             return success;
         }
     }
 
-    private async Task CheckExpirationsAsync()
+    public void Dispose() => nextExpirationTask?.Dispose();
+    
+    private bool TryAdd<TValue>(TKey key, TValue item, long expirationUnixMs) where TValue : notnull
     {
-        using (var timer = new PeriodicTimer(TimeSpan.FromSeconds(1)))
+        if (expirationUnixMs > long.MinValue)
+            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(expirationUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), nameof(expirationUnixMs));
+        
+        lock (_lock)
         {
-            while (await timer.WaitForNextTickAsync())
+            var success = _cache.TryAdd(key, new InternalNotifyCacheItem<TValue>
             {
-                lock (_lock)
-                {
-                    var now = DateTimeOffset.Now.ToUnixTimeSeconds();
-                    var enumerator = _expirationUnixSeconds.Keys.GetEnumerator();
+                Value = item,
+                UnixSeconds = expirationUnixMs
+            });
 
-                    for (int i = 0; enumerator.MoveNext(); i++)
-                    {
-                        if (enumerator.Current >= now)
-                        {
-                            if (_expirationUnixSeconds.Remove(enumerator.Current))
-                                ItemExpired?.Invoke(_expirationUnixSeconds.GetAt(i).Value);
-                        }
-                    }
-                }
+            if (success && expirationUnixMs > long.MinValue)
+            {
+                _expirationUnixMs.Add(expirationUnixMs, key);
+
+                nextExpirationTask = null;
+                nextExpirationTask = Task.Run(async () => await FireNextExpirationAsync(expirationUnixMs));
             }
+
+            return success;
         }
+    }
+
+    public async Task FireNextExpirationAsync(long atUnixMs)
+    {
+        await Task.Delay(DateTimeOffset.FromUnixTimeMilliseconds(atUnixMs).Subtract(DateTimeOffset.UtcNow));
+
+        if (_expirationUnixMs.Remove(atUnixMs, out var key))
+            ItemExpired?.Invoke(key);
+
+        atUnixMs = _expirationUnixMs.GetAt(0).Key;
+        nextExpirationTask = Task.Run(async () => await FireNextExpirationAsync(atUnixMs));
     }
 }
 
