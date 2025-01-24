@@ -6,11 +6,13 @@ sealed class Program
 {
     static async Task Main()
     {
-        _ = new Timer((state) => Console.WriteLine(DateTimeOffset.UtcNow.ToUnixTimeSeconds()), null, 1000, 1000);
+        var start = DateTimeOffset.UtcNow;
+
+        _ = new Timer((state) => Console.WriteLine((DateTimeOffset.UtcNow - start).Seconds), null, 1000, 1000);
 
         var cache = new NotifyCache<int>();
 
-        cache.ItemExpired += key => Console.WriteLine($"{key} was removed");
+        cache.ItemExpired += (key, item) => Console.WriteLine($"Key: {key}\nItem: {item}");
 
         cache.TryAdd(69, "Test", TimeSpan.FromSeconds(10));
         cache.TryAdd(420, 6.9, TimeSpan.FromSeconds(15));

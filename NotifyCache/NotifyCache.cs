@@ -85,11 +85,14 @@ public sealed class NotifyCache<TKey> : IDisposable where TKey : notnull
         await Task.Delay(DateTimeOffset.FromUnixTimeMilliseconds(atUnixMs).Subtract(DateTimeOffset.UtcNow));
 
         if (_expirationUnixMs.Remove(atUnixMs, out var key))
-            ItemExpired?.Invoke(key);
+        {
+            _cache.Remove(key, out var item);
+            ItemExpired?.Invoke(key, item!.ValueObj);
+        }
 
         atUnixMs = _expirationUnixMs.GetAt(0).Key;
         nextExpirationTask = Task.Run(async () => await FireNextExpirationAsync(atUnixMs));
     }
 }
 
-public delegate void OnExpiration<TKey>(TKey key);
+public delegate void OnExpiration<TKey>(TKey key, object value);
